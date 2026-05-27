@@ -6,12 +6,9 @@ class OrderAnalyzer:
     def __init__(self, config):
         self.config = config
         self.results = []
-        self.setup_logging()
 
-    def setup_logging(self):
         log_path = Path(self.config.LOG_DIR) / "errors.log"
         log_path.parent.mkdir(exist_ok=True)
-
         logging.basicConfig(
             filename=log_path,
             level=logging.ERROR,
@@ -23,22 +20,48 @@ class OrderAnalyzer:
             df = pd.read_csv(filepath)
             if df.empty:
                 raise ValueError(f'Файл {filepath} пустой')
+            if len(df.columns) == 1:
+                first_col = df.columns[0]
+                if'"' in first_col or ',' in first_col:
+                    raise ValueError("Первая строка содержит разделители, найдена только одна колонка: '{first_col[:50}'")
+            if 'total_amount' not in df.columns:
+                raise ValueError(f"Нет колонки 'total_amount' в файле {filepath}")
+            df['total_amount'] = pd.to_numeric(df['total_amount'], errors = 'coerce')
             return df
         except Exception as e:
             self.logger.error(f'Ошибка загрузки файла: {e}. Путь к файлу: "{filepath}"')
             return None
 
+    def find_status_column(self, df):
+        possible_names = ['status', 'Status', 'order_status', 'OrderStatus', 'state', 'order_state', 'STATUS']
+        for col in possible_names:
+            if col in df.columns:
+                print(f"Найдена колонка статуса: '{col}'")
+                return col
+
+        print(f"Доступные колонки: {list(df.columns)}")
+        raise ValueError(f'Не найдена колонка со статусом. Искали {possible_names}')
+
+
     def filter_delivered(self, df):
-        return df[df[self.config.STATUS_COLUMN] == self.config.DELIVERED_STATUS].copy()
+        status_col = self.find_status_column(df)
+
+        delivered_mask = df[status_col].astype(str).str.lower() == self.config.DELIVERED_STATUS.lower()
+        delivered = df[delivered_mask].copy()
+
+        print(f'Всего заказов: {len (df)}, "доставленных": {len(delivered)}')
+        return delivered
 
     def calculate_metrics(self, df):
         if df.empty:
-            return {'revenue' : 0, 'avf_order_value': 0, 'orders_count': 0}
+            return {'revenue' : 0, 'avg_order_value': 0, 'orders_count': 0}
+
+        clean_df = df.dropna(subset=['total_amount'])
 
         return{
-            'revenue': df['total_amount'].sum(),
-            'avg_order_valie':df ['total_amount'].mean(),
-            'order_counts': len(df)}
+            'revenue': clean_df['total_amount'].sum(),
+            'avg_order_value':clean_df ['total_amount'].mean(),
+            'orders_count': len(df)}
 
     def process_file(self, filepath):
         df = self.load_file(filepath)
@@ -47,7 +70,7 @@ class OrderAnalyzer:
 
         delivered_df = self.filter_delivered(df)
         metrics = self.calculate_metrics(delivered_df)
-        metrics['filepath']= filepath.name
+        metrics['filename']= filepath.name
         return metrics
 
     def process_all_files(self):
@@ -82,7 +105,7 @@ class OrderAnalyzer:
         result_df = pd.DataFrame(self.results)
         output_path = Path(self.config.OUTPUT_DIR)
         output_path.mkdir(exist_ok= True)
-        result_df.to_csv(output_path / self.config.PUTPUT_FILE, index=False)
+        result_df.to_csv(output_path / self.config.OUTPUT_FILE, index=False)
 
 
 
